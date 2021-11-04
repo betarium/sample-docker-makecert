@@ -1,0 +1,7 @@
+version: "3.0"
+services:
+  docker-makecert:
+    build: docker
+    volumes:
+      - ./cert:/var/docker-makecert/cert:z
+
