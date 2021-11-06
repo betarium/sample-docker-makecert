@@ -1,17 +1,20 @@
-#!/bin/sh
+#!/bin/bash
+
+VERSION="1.0.1"
 
 USAGE=`cat << EOM
     Usage:
-      <CA_NAME> <ACTION> <CERT_NAME> [option...]
+      makecert <ACTION> <option...>
 
-      Create CA Cert.           <CA_NAME> ca
-      Create server cert.       <CA_NAME> server <CERT_NAME> [COMMON_NAME]
-      Show cert file.           <CA_NAME> show [CERT_NAME]
+      Create CA certificate.            ca <CA_NAME>
+      Create server certificate.        server <CA_NAME> <CERT_NAME> [COMMON_NAME]
+      Create self sigin certificate.    self <CA_NAME> <CERT_NAME> [COMMON_NAME]
+      Show certificate file.            show <CA_NAME> [CERT_NAME]
 
-    example:
-      example_com_ca ca
-      example_com_ca server example.com *.example.com
-      example_com_ca show example.com
+    Example:
+      makecert ca example_com_ca
+      makecert server example_com_ca example.com.local *.example.com.local
+      makecert show example_com_ca example.com.local
 EOM
 `
 
@@ -22,6 +25,11 @@ if [ "$1" = "--build" ]; then
 fi
 
 if [ $# -eq 0 -o "$1" = "help" -o "$1" = "--help" -o "$1" = "" ]; then
+
+  echo ""
+  echo "makecert ver $VERSION"
+  openssl version
+  echo ""
 
   IFS='' && echo "$USAGE"
 
@@ -38,20 +46,39 @@ fi
 
 ########################################
 
-CA_NAME=$1
-ACTION=$2
-CERT_NAME=$1
+ACTION=$1
+CA_NAME=$2
+CERT_NAME=${3:-$CA_NAME}
+COMMON_NAME=${4:-$CERT_NAME}
 
-CA_DIR=$CA_NAME
+CA_DIR=cert/$CA_NAME
 CONF_DIR=$CA_DIR/conf
 
 ########################################
 
-if [ ! -d $CA_DIR -a ! $CA_DIR = "." ]; then
-  mkdir $CA_DIR
-fi
+COMMON_NAME_ARRAY=${COMMON_NAME//,/ }
+COMMON_NAME=(${COMMON_NAME_ARRAY})
 
-if [ ! -d $CONF_DIR ]; then
+tmp=""
+for line in $COMMON_NAME_ARRAY
+do
+  if [ "$tmp" != "" ] ; then
+    tmp="$tmp, "
+  fi
+  tmp="$tmp""DNS:$line"
+done
+
+SUBJECT_ALT_NAMES=$tmp
+
+########################################
+
+if [ "$ACTION" = "ca" -o "$ACTION" = "self" ] && [ ! -d $CONF_DIR ]; then
+
+  if [ ! -d $CA_DIR -a ! $CA_DIR = "." ]; then
+    mkdir $CA_DIR
+    chmod -R 777 $CA_DIR
+  fi
+
   mkdir $CONF_DIR
   echo "01" > $CONF_DIR/serial
   echo "00" > $CONF_DIR/crlnumber
@@ -68,27 +95,67 @@ if [ ! -d $CONF_DIR ]; then
   chmod -R 777 $CA_DIR
 fi
 
-if [ "$ACTION" = "ca" ]; then
+if [ "$ACTION" = "self" ]; then
 
   if [ -f $CA_DIR/$CERT_NAME.crt ]; then
     echo "error: cert file already exists."
     exit 2
   fi
 
-  COMMON_NAME=$CA_NAME
   SUBJECT="/C=JP/ST=Tokyo/O=$CERT_NAME/CN=$COMMON_NAME"
 
   openssl genrsa 2048 > $CA_DIR/$CERT_NAME.key
 
+echo "
+basicConstraints = critical,CA:true
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid:always,issuer
+keyUsage = critical, cRLSign, keyCertSign, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = $SUBJECT_ALT_NAMES
+" > $CONF_DIR/$CERT_NAME.ext.cnf
+
   openssl req -new -subj $SUBJECT -key $CA_DIR/$CERT_NAME.key -out $CONF_DIR/$CERT_NAME.csr.tmp
 
-  openssl ca -selfsign -batch -keyfile $CA_DIR/$CERT_NAME.key -extensions v3_ca -config $CONF_DIR/openssl.cnf -in $CONF_DIR/$CERT_NAME.csr.tmp -out $CA_DIR/$CERT_NAME.crt -days 365 -outdir $CONF_DIR
+  openssl ca -selfsign -batch -keyfile $CA_DIR/$CERT_NAME.key -config $CONF_DIR/openssl.cnf -in $CONF_DIR/$CERT_NAME.csr.tmp -out $CA_DIR/$CERT_NAME.crt -days 365 -extfile $CONF_DIR/$CERT_NAME.ext.cnf -outdir $CONF_DIR
 
+  openssl x509 -in $CA_DIR/$CERT_NAME.crt -inform PEM -out $CA_DIR/$CERT_NAME.pem -outform pem
   openssl x509 -in $CA_DIR/$CERT_NAME.crt -inform PEM -out $CA_DIR/$CERT_NAME.der -outform der
-  openssl x509 -in $CA_DIR/$CERT_NAME.der -inform DER -out $CA_DIR/$CERT_NAME.pem -outform pem
   openssl pkcs12 -export -passout pass: -in $CA_DIR/$CERT_NAME.pem -inkey $CA_DIR/$CERT_NAME.key -out $CA_DIR/$CERT_NAME.pfx
 
   chmod -R 777 $CA_DIR
+
+  echo "Create self signed certificate. File=$CA_DIR/$CERT_NAME.crt"
+
+elif [ "$ACTION" = "ca" ]; then
+
+  if [ -f $CA_DIR/$CERT_NAME.crt ]; then
+    echo "error: cert file already exists."
+    exit 2
+  fi
+
+  SUBJECT="/C=JP/ST=Tokyo/O=$CERT_NAME/CN=$COMMON_NAME"
+
+  openssl genrsa 2048 > $CA_DIR/$CERT_NAME.key
+
+echo "
+basicConstraints = critical,CA:true
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid:always,issuer
+keyUsage = critical, cRLSign, keyCertSign
+" > $CONF_DIR/$CERT_NAME.ext.cnf
+
+  openssl req -new -subj $SUBJECT -key $CA_DIR/$CERT_NAME.key -out $CONF_DIR/$CERT_NAME.csr.tmp
+
+  openssl ca -selfsign -batch -keyfile $CA_DIR/$CERT_NAME.key -config $CONF_DIR/openssl.cnf -in $CONF_DIR/$CERT_NAME.csr.tmp -out $CA_DIR/$CERT_NAME.crt -days 3650 -extfile $CONF_DIR/$CERT_NAME.ext.cnf -outdir $CONF_DIR
+
+  openssl x509 -in $CA_DIR/$CERT_NAME.crt -inform PEM -out $CA_DIR/$CERT_NAME.pem -outform pem
+  openssl x509 -in $CA_DIR/$CERT_NAME.crt -inform PEM -out $CA_DIR/$CERT_NAME.der -outform der
+  openssl pkcs12 -export -passout pass: -in $CA_DIR/$CERT_NAME.pem -inkey $CA_DIR/$CERT_NAME.key -out $CA_DIR/$CERT_NAME.pfx
+
+  chmod -R 777 $CA_DIR/$CERT_NAME.*
+
+  echo "Create CA certificate. File=$CA_DIR/$CERT_NAME.crt"
 
 elif [ "$ACTION" = "server" ]; then
   if [ "$3" = "" ]; then
@@ -96,8 +163,6 @@ elif [ "$ACTION" = "server" ]; then
     exit 1
   fi
 
-  CERT_NAME=$3
-  COMMON_NAME=${4:-$CERT_NAME}
   SUBJECT="/C=JP/ST=Tokyo/O=$CERT_NAME/CN=$COMMON_NAME"
 
   if [ -f $CA_DIR/$CERT_NAME.crt ]; then
@@ -109,22 +174,26 @@ elif [ "$ACTION" = "server" ]; then
 
 echo "
 basicConstraints = critical, CA:false
-keyUsage = critical, cRLSign, keyCertSign, keyEncipherment, digitalSignature, dataEncipherment
+keyUsage = critical, digitalSignature
 extendedKeyUsage = serverAuth
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid:always,issuer
-subjectAltName = DNS:$COMMON_NAME
-" >> $CONF_DIR/$CERT_NAME.ext.cnf
+subjectAltName = $SUBJECT_ALT_NAMES
+" > $CONF_DIR/$CERT_NAME.ext.cnf
 
   openssl req -new -subj $SUBJECT -key $CA_DIR/$CERT_NAME.key -out $CONF_DIR/$CERT_NAME.csr.tmp
 
-  openssl x509 -req -in $CONF_DIR/$CERT_NAME.csr.tmp -CA $CA_DIR/$CA_NAME.crt -CAkey $CA_DIR/$CA_NAME.key -days 365 -extfile $CONF_DIR/$CERT_NAME.ext.cnf -CAserial $CONF_DIR/serial -out $CA_DIR/$CERT_NAME.crt
+  openssl x509 -req -text -in $CONF_DIR/$CERT_NAME.csr.tmp -CA $CA_DIR/$CA_NAME.crt -CAkey $CA_DIR/$CA_NAME.key -days 365 -extfile $CONF_DIR/$CERT_NAME.ext.cnf -CAserial $CONF_DIR/serial -out $CA_DIR/$CERT_NAME.crt
 
+  cat $CA_DIR/$CERT_NAME.crt $CA_DIR/$CA_NAME.crt > $CA_DIR/$CERT_NAME.chain.crt
+
+  openssl x509 -in $CA_DIR/$CERT_NAME.crt -inform PEM -out $CA_DIR/$CERT_NAME.pem -outform pem
   openssl x509 -in $CA_DIR/$CERT_NAME.crt -inform PEM -out $CA_DIR/$CERT_NAME.der -outform der
-  openssl x509 -in $CA_DIR/$CERT_NAME.der -inform DER -out $CA_DIR/$CERT_NAME.pem -outform pem
   openssl pkcs12 -export -passout pass: -in $CA_DIR/$CERT_NAME.pem -inkey $CA_DIR/$CERT_NAME.key -out $CA_DIR/$CERT_NAME.pfx
 
-  chmod -R 777 $CA_DIR
+  chmod -R 777 $CA_DIR/$CERT_NAME.*
+
+  echo "Create server certificate. File=$CA_DIR/$CERT_NAME.crt"
 
 elif [ "$ACTION" = "show" ]; then
   CERT_NAME=${3:-$CA_NAME}
