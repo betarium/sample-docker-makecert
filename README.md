@@ -1,8 +1,14 @@
 # sample-docker-makecert
 
-## licence
-MIT License
-Copyright (c) 2021 betarium
+## Description
+
+Create SSL certificate file in docker.
+Support Windows and Linux.
+
+## Require
+
+* docker
+* docker-compose
 
 ## Usage
 
@@ -58,3 +64,6 @@ cat /etc/pki/tls/certs/ca-bundle.crt | grep <CA_CERT_NAME>
 chrome://flags/#allow-insecure-localhost
 change true
 
+## Licence
+MIT License
+Copyright (c) 2021 betarium
